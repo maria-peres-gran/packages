@@ -55,11 +55,67 @@ extension Product.SubscriptionInfo {
       allOffers.append(introductory.convertToPigeon)
     }
 
+    var terms: [SK2PricingTermsMessage]?
+    if #available(iOS 26.4, macOS 26.4, tvOS 26.4, visionOS 26.4, *) {
+      terms = pricingTerms.map { $0.convertToPigeon }
+    }
+
     return SK2SubscriptionInfoMessage(
       promotionalOffers: allOffers,
       subscriptionGroupID: subscriptionGroupID,
-      subscriptionPeriod: subscriptionPeriod.convertToPigeon
+      subscriptionPeriod: subscriptionPeriod.convertToPigeon,
+      pricingTerms: terms
     )
+  }
+}
+
+@available(iOS 26.4, macOS 26.4, tvOS 26.4, visionOS 26.4, *)
+extension Product.SubscriptionInfo.BillingPlanType {
+  var convertToPigeon: SK2BillingPlanTypeMessage {
+    switch self {
+    case .upFront: return .upFront
+    case .monthly: return .monthly
+    default: return .unknown
+    }
+  }
+}
+
+@available(iOS 26.4, macOS 26.4, tvOS 26.4, visionOS 26.4, *)
+extension Product.SubscriptionInfo.CommitmentInfo {
+  var convertToPigeon: SK2CommitmentInfoMessage {
+    return SK2CommitmentInfoMessage(
+      price: NSDecimalNumber(decimal: price).doubleValue,
+      displayPrice: displayPrice,
+      period: period.convertToPigeon
+    )
+  }
+}
+
+@available(iOS 26.4, macOS 26.4, tvOS 26.4, visionOS 26.4, *)
+extension Product.SubscriptionInfo.PricingTerms {
+  var convertToPigeon: SK2PricingTermsMessage {
+    let planType = billingPlanType.convertToPigeon
+    return SK2PricingTermsMessage(
+      billingPlanType: planType,
+      billingPrice: NSDecimalNumber(decimal: billingPrice).doubleValue,
+      billingDisplayPrice: billingDisplayPrice,
+      billingPeriod: billingPeriod.convertToPigeon,
+      subscriptionOffers: subscriptionOffers.map { $0.convertToPigeon },
+      // Only a monthly plan carries a commitment; the value is meaningless
+      // for an up-front plan.
+      commitmentInfo: planType == .monthly ? commitmentInfo.convertToPigeon : nil
+    )
+  }
+}
+
+@available(iOS 26.4, macOS 26.4, tvOS 26.4, visionOS 26.4, *)
+extension SK2BillingPlanTypeMessage {
+  var convertFromPigeon: Product.SubscriptionInfo.BillingPlanType? {
+    switch self {
+    case .monthly: return .monthly
+    case .upFront: return .upFront
+    case .unknown: return nil
+    }
   }
 }
 
@@ -169,8 +225,14 @@ extension Product.SubscriptionOffer.PaymentMode {
 
 extension Locale {
   var convertToPigeon: SK2PriceLocaleMessage {
+    let code: String
+    if #available(iOS 16.0, macOS 13.0, *) {
+      code = currency?.identifier ?? ""
+    } else {
+      code = currencyCode ?? ""
+    }
     return SK2PriceLocaleMessage(
-      currencyCode: currencyCode ?? "",
+      currencyCode: code,
       currencySymbol: currencySymbol ?? ""
     )
   }

@@ -566,6 +566,86 @@ void main() {
     expect(find.byType(Scrollbar).last, paints..rrect(color: const Color(0xff00ff00)));
   }, variant: TargetPlatformVariant.desktop());
 
+  // Regression test for https://github.com/flutter/flutter/issues/188155.
+  testWidgets('Menu scrollbar does not inherit MediaQuery padding', (WidgetTester tester) async {
+    addTearDown(tester.view.reset);
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.padding = const FakeViewPadding(left: 8.0, top: 16.0, right: 32.0, bottom: 24.0);
+    EdgeInsets? menuItemPadding;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: MenuAnchor(
+            controller: controller,
+            style: const MenuStyle(
+              maximumSize: WidgetStatePropertyAll<Size>(Size.fromHeight(100.0)),
+            ),
+            menuChildren: <Widget>[
+              Builder(
+                builder: (BuildContext context) {
+                  menuItemPadding = MediaQuery.paddingOf(context);
+                  return MenuItemButton(onPressed: () {}, child: const Text('Item 0'));
+                },
+              ),
+              for (int i = 1; i < 4; i++) MenuItemButton(onPressed: () {}, child: Text('Item $i')),
+            ],
+            builder: (BuildContext context, MenuController controller, Widget? child) {
+              return TextButton(onPressed: controller.open, child: const Text('Open menu'));
+            },
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open menu'));
+    await tester.pumpAndSettle();
+
+    final CustomPaint scrollbarPaint = tester.widget<CustomPaint>(
+      find.descendant(
+        of: find.byType(Scrollbar),
+        matching: find.byWidgetPredicate(
+          (Widget widget) => widget is CustomPaint && widget.foregroundPainter is ScrollbarPainter,
+        ),
+      ),
+    );
+    // The scrollbar ignores the view padding, but the menu children still
+    // observe it.
+    final scrollbarPainter = scrollbarPaint.foregroundPainter! as ScrollbarPainter;
+    expect(scrollbarPainter.padding, EdgeInsets.zero);
+    expect(menuItemPadding, const EdgeInsets.fromLTRB(8.0, 16.0, 32.0, 24.0));
+
+    // The menu scrolls all the way to the bottom and the scrollbar thumb
+    // reaches the end of its track instead of stopping short of it.
+    final ScrollableState scrollable = tester.state<ScrollableState>(
+      find.descendant(of: find.byType(Scrollbar), matching: find.byType(Scrollable)),
+    );
+    expect(scrollable.position.maxScrollExtent, greaterThan(0.0));
+    await tester.drag(find.byType(Scrollbar), const Offset(0.0, -200.0));
+    await tester.pumpAndSettle();
+    expect(scrollable.position.pixels, scrollable.position.maxScrollExtent);
+
+    // The thumb is painted at the very end of the track rather than stopping
+    // short of it by the height of the removed bottom padding.
+    final double scrollbarExtent = tester.getSize(find.byType(Scrollbar)).height;
+    expect(
+      find.byType(Scrollbar),
+      paints..something((Symbol method, List<dynamic> arguments) {
+        // The thumb is a rect on Android and a rounded rect elsewhere. The
+        // track shares the same shape but always starts at the top, so only
+        // the thumb is considered here.
+        final Rect? shape = switch (method) {
+          #drawRect => arguments[0] as Rect,
+          #drawRRect => (arguments[0] as RRect).outerRect,
+          _ => null,
+        };
+        return shape != null &&
+            shape.top > 0.0 &&
+            (shape.bottom - scrollbarExtent).abs() < precisionErrorTolerance;
+      }),
+    );
+  });
+
   testWidgets('Focus is returned to previous focus before invoking onPressed', (
     WidgetTester tester,
   ) async {
@@ -2477,7 +2557,7 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
       expect(focusedMenu, equals('MenuItemButton(Text("Submenu item 1"))'));
-    });
+    }, tags: 'reduced-web-test-set');
   });
 
   group('Accelerators', () {
@@ -3337,6 +3417,50 @@ void main() {
       expect(exception, isAssertionError);
     });
 
+    // This is a regression test for https://github.com/flutter/flutter/issues/192732.
+    testWidgets('MenuItemButton does not clip leadingIcon', (WidgetTester tester) async {
+      const label = 'This is a very long menu item label that must be clipped';
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MenuAnchor(
+              menuChildren: <Widget>[
+                SizedBox(
+                  width: 200.0,
+                  child: MenuItemButton(
+                    leadingIcon: const Badge(
+                      label: Text('1'),
+                      child: Icon(Icons.add, key: Key('leading')),
+                    ),
+                    onPressed: () {},
+                    child: const Text(label, maxLines: 1),
+                  ),
+                ),
+              ],
+              builder: (BuildContext context, MenuController controller, Widget? child) {
+                return TextButton(onPressed: controller.open, child: const Text('Open'));
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      // Decorations that paint outside the leading icon's bounds stay visible.
+      expect(
+        find.ancestor(of: find.byKey(const Key('leading')), matching: find.byType(ClipRect)),
+        findsNothing,
+      );
+
+      // The label itself is still clipped so that long labels truncate.
+      final Finder labelFinder = find.text(label);
+      expect(find.ancestor(of: labelFinder, matching: find.byType(ClipRect)), findsOneWidget);
+      final RenderParagraph paragraph = tester.renderObject<RenderParagraph>(labelFinder);
+      expect(paragraph.didExceedMaxLines, isTrue);
+    });
+
     testWidgets('MenuItemButton.styleFrom overlayColor overrides default overlay color', (
       WidgetTester tester,
     ) async {
@@ -4068,9 +4192,8 @@ void main() {
         MaterialApp(
           builder: (BuildContext context, Widget? child) {
             return MediaQuery(
-              data: MediaQuery.of(
-                context,
-              ).copyWith(viewInsets: const EdgeInsets.only(bottom: keyboardHeight)),
+              data: MediaQuery.of(context)
+                  .copyWith(viewInsets: const EdgeInsets.only(bottom: keyboardHeight)),
               child: child!,
             );
           },
@@ -4508,7 +4631,7 @@ void main() {
         );
 
         semantics.dispose();
-      });
+      }, tags: 'reduced-web-test-set');
 
       testWidgets('MenuItemButton semantics respects label', (WidgetTester tester) async {
         final semantics = SemanticsTester(tester);
@@ -4578,7 +4701,7 @@ void main() {
         );
 
         semantics.dispose();
-      });
+      }, tags: 'reduced-web-test-set');
 
       testWidgets('SubmenuButton expanded/collapsed state', (WidgetTester tester) async {
         final semantics = SemanticsTester(tester);
@@ -4742,7 +4865,7 @@ void main() {
         );
 
         semantics.dispose();
-      });
+      }, tags: 'reduced-web-test-set');
 
       testWidgets('Animated SubmenuButton expanded/collapsed state', (WidgetTester tester) async {
         final semantics = SemanticsTester(tester);
@@ -5486,7 +5609,7 @@ void main() {
         RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
         kIsWeb ? SystemMouseCursors.click : SystemMouseCursors.basic,
       );
-    });
+    }, tags: 'reduced-web-test-set');
 
     testWidgets('MenuItemButton has expected default mouse cursor on hover', (
       WidgetTester tester,
@@ -5530,7 +5653,7 @@ void main() {
         RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
         kIsWeb ? SystemMouseCursors.click : SystemMouseCursors.basic,
       );
-    });
+    }, tags: 'reduced-web-test-set');
 
     testWidgets('CheckboxMenuButton has expected default mouse cursor on hover', (
       WidgetTester tester,
@@ -5566,7 +5689,7 @@ void main() {
         RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
         kIsWeb ? SystemMouseCursors.click : SystemMouseCursors.basic,
       );
-    });
+    }, tags: 'reduced-web-test-set');
 
     testWidgets('RadioMenuButton has expected default mouse cursor on hover', (
       WidgetTester tester,
@@ -5603,7 +5726,7 @@ void main() {
         RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
         kIsWeb ? SystemMouseCursors.click : SystemMouseCursors.basic,
       );
-    });
+    }, tags: 'reduced-web-test-set');
 
     testWidgets('MenuItemButton has expected mouse cursor when explicitly configured', (
       WidgetTester tester,
